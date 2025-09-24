@@ -2178,7 +2178,7 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
                 ctx.save_for_backward(
                     *mark_dynamic_activations(
                         [
-                            x.detach() if x._is_view() else x
+                            x.detach().requires_grad_(x.requires_grad) if x._is_view() else x
                             for x in tensors_saved_for_backwards
                         ]
                     )

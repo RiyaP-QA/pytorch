@@ -140,6 +140,16 @@ def _detach_and_copy_item_memo(t):
     return detached_t
 
 
+# TODO: Refactor the following code so detach() persists requires_grad
+def _detach_and_restore_requires_grad(t):
+    detached_t = t.detach()
+    if hasattr(t, "item_memo"):
+        detached_t.item_memo = t.item_memo
+    # Restore requires_grad information that was lost during detach()
+    detached_t.requires_grad_(t.requires_grad)
+    return detached_t
+
+
 def aot_dispatch_base_graph(
     flat_fn: TraceFn,
     flat_args: list[FxValue],
@@ -227,7 +237,7 @@ def aot_dispatch_base_graph(
         )
     else:
         saved_updated_flat_args_subclasses_desugared = pytree.tree_map_only(
-            torch.Tensor, lambda t: t.detach(), updated_flat_args_subclasses_desugared
+            torch.Tensor, _detach_and_restore_requires_grad, updated_flat_args_subclasses_desugared
         )
     saved_updated_flat_args_subclasses_desugared_descs = (
         updated_flat_args_subclasses_desugared_descs
@@ -421,15 +431,16 @@ def aot_dispatch_autograd_graph(
     # This destroys requires_grad/grad_fn information.  However, backends
     # beneath AOTAutograd are indifferent to this information, so it doesn't
     # matter.
+    # NOTE: We restore requires_grad information after detach() to fix issue #163716
 
     fake_mode = detect_fake_mode()
     if fake_mode:
         saved_updated_joint_inputs = pytree.tree_map_only(
-            torch.Tensor, _detach_and_copy_item_memo, updated_joint_inputs
+            torch.Tensor, _detach_and_restore_requires_grad, updated_joint_inputs
         )
     else:
         saved_updated_joint_inputs = pytree.tree_map_only(
-            torch.Tensor, lambda t: t.detach(), updated_joint_inputs
+            torch.Tensor, _detach_and_restore_requires_grad, updated_joint_inputs
         )
     maybe_subclass_meta = subclass_tracing_info.maybe_subclass_meta
 
