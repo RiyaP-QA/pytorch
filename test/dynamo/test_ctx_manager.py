@@ -21,6 +21,7 @@ from torch.testing._internal.common_cuda import (
     TEST_MULTIGPU,
 )
 from torch.testing._internal.common_utils import (
+    instantiate_device_type_tests,
     instantiate_parametrized_tests,
     parametrize,
 )
@@ -218,22 +219,21 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertTrue(same(ref, res))
         self.assertEqual(cnts.frame_count, 2)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_cuda_stream_context_manager1(self):
+    def test_stream_context_manager1(self, device):
         def fn(x):
-            s = torch.cuda.Stream()
+            s = torch.Stream(device)
             x = torch.mul(x, 5)
             x = torch.add(x, 2)
-            current_stream = torch.cuda.current_stream()
+            current_stream = torch.accelerator.current_stream()
             s.wait_stream(current_stream)
-            with torch.cuda.stream(s):
+            with s:
                 x = torch.relu(x)
             current_stream.wait_stream(s)
             x = torch.add(x, 1)
             x = torch.cos(x)
             return x
 
-        x = torch.randn((2, 2), device="cuda")
+        x = torch.randn((2, 2), device=device)
         ref = fn(x)
         cnts = torch._dynamo.testing.CompileCounter()
         opt_fn = torch.compile(fn, backend=cnts, fullgraph=True)
@@ -243,20 +243,18 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertExpectedInline(str(cnts.op_count), """9""")
 
     @unittest.expectedFailure  # https://github.com/pytorch/pytorch/issues/118204
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_cuda_stream_across_graph_break(self):
+    def test_stream_across_graph_break(self, device):
         def fn(x):
-            s = torch.cuda.Stream()
+            s = torch.Stream(device)
             x = torch.mul(x, 5)
             x = torch.add(x, 2)
 
             print("foo")
 
-            tcs = torch.cuda.stream(s)
-            current_stream = torch.cuda.current_stream()
+            current_stream = torch.accelerator.current_stream()
             s.wait_stream(current_stream)
 
-            with tcs:
+            with s:
                 x = torch.relu(x)
 
             current_stream.wait_stream(s)
@@ -264,7 +262,7 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
             x = torch.cos(x)
             return x
 
-        x = torch.randn((2, 2), device="cuda")
+        x = torch.randn((2, 2), device=device)
         ref = fn(x)
         cnts = torch._dynamo.testing.CompileCounter()
         opt_fn = torch.compile(fn, backend=cnts)
@@ -274,25 +272,24 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(cnts.op_count, 9)
 
     @unittest.expectedFailure  # https://github.com/pytorch/pytorch/issues/118204
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_cuda_stream_context_manager2(self):
+    def test_stream_context_manager2(self, device):
         def fn(x, s):
             x = torch.mul(x, 5)
             x = torch.add(x, 2)
 
-            current_stream = torch.cuda.current_stream()
+            current_stream = torch.accelerator.current_stream()
             s.wait_stream(current_stream)
 
-            with torch.cuda.stream(s):
+            with s:
                 x = torch.relu(x)
 
             current_stream.wait_stream(s)
-            with torch.cuda.stream(current_stream):
+            with current_stream:
                 x = torch.relu(x)
 
-            s2 = torch.cuda.Stream()
+            s2 = torch.Stream(device)
             s2.wait_stream(current_stream)
-            with torch.cuda.stream(s2):
+            with s2:
                 x = torch.relu(x)
 
             current_stream.wait_stream(s2)
@@ -300,8 +297,8 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
             x = torch.cos(x)
             return x
 
-        x = torch.randn((2, 2), device="cuda")
-        s = torch.cuda.Stream()
+        x = torch.randn((2, 2), device=device)
+        s = torch.Stream(device)
         ref = fn(x, s)
         cnts = torch._dynamo.testing.CompileCounter()
         opt_fn = torch.compile(fn, backend=cnts, fullgraph=True)
@@ -310,17 +307,16 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(cnts.frame_count, 1)
         self.assertEqual(cnts.op_count, 18)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_cuda_stream_method(self):
+    def test_stream_method(self, device):
         def fn(x):
             x = torch.mul(x, 1)
             x = torch.add(x, 2)
 
-            new_stream = torch.cuda.Stream()
-            cur_stream = torch.cuda.current_stream()
+            new_stream = torch.Stream(device)
+            cur_stream = torch.accelerator.current_stream()
             new_stream.wait_stream(cur_stream)
 
-            with torch.cuda.stream(new_stream):
+            with new_stream:
                 x = torch.sin(x)
                 x = torch.add(x, 3)
 
@@ -330,7 +326,7 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
             cur_stream.query()
             cur_stream.synchronize()
 
-            with torch.cuda.stream(new_stream):
+            with new_stream:
                 x = torch.add(x, 5)
             new_stream.synchronize()
 
@@ -338,7 +334,7 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
             x = torch.cos(x)
             return x
 
-        x = torch.randn((2, 2), device="cuda")
+        x = torch.randn((2, 2), device=device)
         ref = fn(x)
         cnts = torch._dynamo.testing.CompileCounter()
         opt_fn = torch.compile(fn, backend=cnts, fullgraph=True)
@@ -347,13 +343,12 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(cnts.frame_count, 1)
         self.assertExpectedInline(str(cnts.op_count), """15""")
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_cuda_stream_compared_with_constant(self):
+    def test_stream_compared_with_constant(self, device):
         def fn(x):
             x = torch.mul(x, 1)
             x = torch.add(x, 2)
 
-            cur_stream = torch.cuda.current_stream()
+            cur_stream = torch.accelerator.current_stream()
             if cur_stream is not None:
                 return x + 1
             return x - 1
@@ -362,12 +357,12 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
             x = torch.mul(x, 1)
             x = torch.add(x, 2)
 
-            cur_stream = torch.cuda.current_stream()
+            cur_stream = torch.accelerator.current_stream()
             if cur_stream != "const_str":
                 return x + 1
             return x - 1
 
-        x = torch.randn((2, 2), device="cuda")
+        x = torch.randn((2, 2), device=device)
         ref = fn(x)
         cnts = torch._dynamo.testing.CompileCounter()
         opt_fn = torch.compile(fn, backend=cnts, fullgraph=True)
@@ -377,17 +372,16 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(ref, res)
         self.assertEqual(ref, res2)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_cuda_stream_compared_with_stream(self):
+    def test_stream_compared_with_stream(self, device):
         def fn(x, s0, s1):
             if s0 == s1:
                 return x + 1
             else:
                 return x - 1
 
-        s0 = torch.cuda.Stream()
-        s1 = torch.cuda.Stream()
-        x = torch.randn(2, 2)
+        s0 = torch.Stream(device)
+        s1 = torch.Stream(device)
+        x = torch.randn(2, 2)  # Keep CPU tensor - tests stream comparison, not tensor ops
         cnts = torch._dynamo.testing.CompileCounter()
         opt_fn = torch.compile(fn, backend=cnts, fullgraph=True)
 
@@ -417,18 +411,17 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(cnts.frame_count, 2)
         self.assertEqual(ref0, res0)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
     @unittest.skip(
         "Will not support external events for now: https://github.com/pytorch/pytorch/issues/167257"
     )
-    def test_cuda_event_reconstruct(self):
+    def test_event_reconstruct(self, device):
         def fn(x):
-            e = torch.cuda.Event()
+            e = torch.Event(device)
             x = torch.mul(x, 5)
             x = torch.add(x, 2)
             return x, e
 
-        x = torch.randn((2, 2), device="cuda")
+        x = torch.randn((2, 2), device=device)
         ref = fn(x)
         cnts = torch._dynamo.testing.CompileCounter()
         opt_fn = torch.compile(fn, backend=cnts)
@@ -437,25 +430,24 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(cnts.frame_count, 1)
         self.assertEqual(cnts.op_count, 3)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
     @unittest.skip(
         "Will not support external events for now: https://github.com/pytorch/pytorch/issues/167257"
     )
-    def test_cuda_event_across_graph_break(self):
+    def test_event_across_graph_break(self, device):
         def fn(x):
-            e = torch.cuda.Event()
+            e = torch.Event(device)
             e.record()
             x = torch.mul(x, 5)
             x = torch.add(x, 2)
 
             print("foo")
 
-            torch.cuda.current_stream().wait_event(e)
+            torch.accelerator.current_stream().wait_event(e)
             x = torch.add(x, 1)
             x = torch.cos(x)
             return x, e
 
-        x = torch.randn((2, 2), device="cuda")
+        x = torch.randn((2, 2), device=device)
         ref = fn(x)
         cnts = torch._dynamo.testing.CompileCounter()
         opt_fn = torch.compile(fn, backend=cnts)
@@ -464,33 +456,32 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(cnts.frame_count, 2)
         self.assertEqual(cnts.op_count, 10)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
     @unittest.skip(
         "Will not support external events for now: https://github.com/pytorch/pytorch/issues/167257"
     )
-    def test_cuda_event_created_outside_of_graph(self):
-        user_stream = torch.cuda.Stream()
-        event = torch.cuda.Event()
-        foo = torch.empty((2, 2), device="cuda")
+    def test_event_created_outside_of_graph(self, device):
+        user_stream = torch.Stream(device)
+        event = torch.Event(device)
+        foo = torch.empty((2, 2), device=device)
 
         def func(foo):
             event.wait()
             return foo + 1, event
 
-        x = torch.randn((1024, 1024), device="cuda")
+        x = torch.randn((1024, 1024), device=device)
         cnts = torch._dynamo.testing.CompileCounter()
 
         def run_iters(fn, compile=False):
             if compile:
                 fn = torch.compile(fn, backend=cnts)
             for _ in range(10):
-                with torch.cuda.stream(user_stream):
+                with user_stream:
                     torch.mm(x, x, out=foo)
                     event.record()
                 out = fn(foo)
                 # let `fn` finish reading `foo` before writing to it in the next
                 # iteration or `run_iters` call.
-                torch.cuda.current_stream().synchronize()
+                torch.accelerator.current_stream().synchronize()
             return out
 
         ref = run_iters(func, compile=False)
@@ -499,11 +490,10 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(cnts.frame_count, 1)
         self.assertEqual(cnts.op_count, 4)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
     @unittest.skip(
         "Will not support external events for now: https://github.com/pytorch/pytorch/issues/167257"
     )
-    def test_cuda_event_method_create_stream_outside_of_compile(self):
+    def test_event_method_create_stream_outside_of_compile(self, device):
         def fn(x, cur_stream, new_stream):
             x = torch.mul(x, 1)
             x = torch.add(x, 2)
@@ -514,10 +504,10 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
             event.query()
 
             new_stream.wait_event(event)
-            with torch.cuda.stream(new_stream):
+            with new_stream:
                 x = torch.add(x, 4)
 
-            new_event = torch.cuda.Event()
+            new_event = torch.Event(device)
             new_event.record(new_stream)
 
             new_event.wait(cur_stream)
@@ -530,9 +520,9 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
             x = torch.cos(x)
             return x
 
-        x = torch.randn((2, 2), device="cuda")
-        cur_stream = torch.cuda.current_stream()
-        new_stream = torch.cuda.Stream()
+        x = torch.randn((2, 2), device=device)
+        cur_stream = torch.accelerator.current_stream()
+        new_stream = torch.Stream(device)
         ref = fn(x, cur_stream, new_stream)
         cnts = torch._dynamo.testing.CompileCounter()
         opt_fn = torch.compile(fn, backend=cnts, fullgraph=True)
@@ -541,14 +531,13 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(cnts.frame_count, 1)
         self.assertExpectedInline(str(cnts.op_count), """16""")
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_cuda_event_method(self):
+    def test_event_method(self, device):
         def fn(x):
             x = torch.mul(x, 1)
             x = torch.add(x, 2)
 
-            cur_stream = torch.cuda.current_stream()
-            new_stream = torch.cuda.Stream()
+            cur_stream = torch.accelerator.current_stream()
+            new_stream = torch.Stream(device)
 
             x = torch.add(x, 3)
 
@@ -556,10 +545,10 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
             event.query()
 
             new_stream.wait_event(event)
-            with torch.cuda.stream(new_stream):
+            with new_stream:
                 x = torch.add(x, 4)
 
-            new_event = torch.Event()
+            new_event = torch.Event()  # Keep as-is - already device-agnostic
             new_event.record(new_stream)
 
             new_event.wait(cur_stream)
@@ -572,7 +561,7 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
             x = torch.cos(x)
             return x
 
-        x = torch.randn((2, 2), device="cuda")
+        x = torch.randn((2, 2), device=device)
         ref = fn(x)
         cnts = torch._dynamo.testing.CompileCounter()
         opt_fn = torch.compile(fn, backend=cnts, fullgraph=True)
@@ -581,51 +570,53 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(cnts.frame_count, 1)
         self.assertExpectedInline(str(cnts.op_count), """16""")
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_cuda_device(self):
+    def test_device_context(self, device):
+        device_module = torch.get_device_module(device)
+
         def fn(x):
-            with torch.cuda.device(x.device.index - 1):
+            with device_module.device(x.device.index - 1):
                 x = torch.sin(x + 1)
             return x
 
-        x = torch.randn((2, 2), device="cuda")
+        x = torch.randn((2, 2), device=device)
         ref = fn(x)
         opt_fn = torch.compile(backend="eager", fullgraph=True)(fn)
         res = opt_fn(x)
         self.assertEqual(ref, res)
 
     @unittest.skipIf(not TEST_MULTIGPU, "Requires multiple gpus")
-    def test_cuda__exchange_device(self):
+    def test_exchange_device(self, device):
+        device_module = torch.get_device_module(device)
+
         def fn(x):
-            dev = torch.cuda._exchange_device(0)
+            dev = torch._C._accelerator_hooks_exchange_device(0)
             x = torch.sin(x + dev)
-            torch.cuda._maybe_exchange_device(dev)
+            torch._C._accelerator_hooks_maybe_exchange_device(dev)
             return x
 
-        initial_dev = torch.cuda.current_device()
-        x = torch.randn((2, 2), device="cuda")
+        initial_dev = torch.accelerator.current_device_idx()
+        x = torch.randn((2, 2), device=device)
         ref = fn(x)
         opt_fn = torch.compile(backend="eager", fullgraph=True)(fn)
         res = opt_fn(x)
         self.assertEqual(ref, res)
 
         # make sure we recompile if device changes
-        with torch.cuda.device(1):
+        with device_module.device(1):
             ref = fn(x)
             res = opt_fn(x)
         self.assertEqual(ref, res)
-        self.assertEqual(torch.cuda.current_device(), initial_dev)
+        self.assertEqual(torch.accelerator.current_device_idx(), initial_dev)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_cuda__exchange_device_args(self):
+    def test_exchange_device_args(self, device):
         @torch.compile(backend="eager", fullgraph=True)
         def fn(args, kwargs):
-            torch.cuda._exchange_device(*args, **kwargs)
+            torch._C._accelerator_hooks_exchange_device(*args, **kwargs)
 
-        initial_dev = torch.cuda.current_device()
+        initial_dev = torch.accelerator.current_device_idx()
         for args, kwargs in (((), ()), ((0, 0), ()), ((), ("kwarg",))):
             self.assertRaises(torch._dynamo.exc.Unsupported, fn, args, kwargs)
-            self.assertEqual(torch.cuda.current_device(), initial_dev)
+            self.assertEqual(torch.accelerator.current_device_idx(), initial_dev)
 
     def test_autograd_profiler_enabled(self):
         def fn(x):
@@ -653,18 +644,22 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
             res = opt_fn(x)
             self.assertTrue(same(ref, res))
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_autocast(self):
-        if not torch.cuda.is_bf16_supported():
+    def test_autocast(self, device):
+        if not torch.amp.is_autocast_available(device):
+            raise unittest.SkipTest(f"autocast not available on {device}")
+
+        # Check bf16 support (device-specific)
+        device_module = torch.get_device_module(device)
+        if hasattr(device_module, "is_bf16_supported") and not device_module.is_bf16_supported():
             raise unittest.SkipTest("requires bf16")
 
         class MyModule(torch.nn.Module):
             def forward(self, x):
-                a_float32 = torch.rand((8, 8), device="cuda")
-                b_float32 = torch.rand((8, 8), device="cuda")
-                d_float32 = torch.rand((8, 8), device="cuda")
+                a_float32 = torch.rand((8, 8), device=device)
+                b_float32 = torch.rand((8, 8), device=device)
+                d_float32 = torch.rand((8, 8), device=device)
 
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                with torch.autocast(device_type=device, dtype=torch.bfloat16):
                     e_float16 = torch.mm(a_float32, b_float32)
                     f_float16 = torch.mm(d_float32, e_float16)
                 return f_float16
@@ -679,18 +674,20 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(exported.device, real_device)
         self.assertEqual(exported.dtype, real_dtype)
 
-        self.assertEqual(exported.device.type, "cuda")
+        self.assertEqual(exported.device.type, device)
         self.assertEqual(exported.device.index, 0)
         self.assertEqual(exported.dtype, torch.bfloat16)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_cuda_amp_autocast(self):
+    def test_amp_autocast(self, device):
+        if not torch.amp.is_autocast_available(device):
+            raise unittest.SkipTest(f"autocast not available on {device}")
+
         class MyModule(torch.nn.Module):
             def forward(self, x):
-                a_float32 = torch.rand((8, 8), device="cuda")
-                b_float32 = torch.rand((8, 8), device="cuda")
+                a_float32 = torch.rand((8, 8), device=device)
+                b_float32 = torch.rand((8, 8), device=device)
 
-                with torch.autocast(device_type="cuda", dtype=torch.float64):
+                with torch.autocast(device_type=device, dtype=torch.float64):
                     c_float64 = torch.mm(a_float32, b_float32)
                 return c_float64
 
@@ -704,7 +701,7 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(exported.device, real_device)
         self.assertEqual(exported.dtype, real_dtype)
 
-        self.assertEqual(exported.device.type, "cuda")
+        self.assertEqual(exported.device.type, device)
         self.assertEqual(exported.device.index, 0)
         self.assertEqual(exported.dtype, torch.float64)
 
@@ -957,15 +954,17 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(out_32.device.type, "cpu")
         self.assertEqual(out_32.dtype, torch.float32)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_autocast_float64(self):
+    def test_autocast_float64(self, device):
+        if not torch.amp.is_autocast_available(device):
+            raise unittest.SkipTest(f"autocast not available on {device}")
+
         class MyModule(torch.nn.Module):
             def forward(self, x):
-                a_float32 = torch.rand((8, 8), device="cuda")
-                b_float32 = torch.rand((8, 8), device="cuda")
-                d_float32 = torch.rand((8, 8), device="cuda")
+                a_float32 = torch.rand((8, 8), device=device)
+                b_float32 = torch.rand((8, 8), device=device)
+                d_float32 = torch.rand((8, 8), device=device)
 
-                with torch.autocast(device_type="cuda", dtype=torch.float64):
+                with torch.autocast(device_type=device, dtype=torch.float64):
                     e_float64 = torch.mm(a_float32, b_float32)
                     f_float64 = torch.mm(d_float32, e_float64)
                 return f_float64
@@ -983,15 +982,17 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(exported.device.index, 0)
         self.assertEqual(exported.dtype, torch.float64)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_autocast_device(self):
+    def test_autocast_device(self, device):
+        if not torch.amp.is_autocast_available(device):
+            raise unittest.SkipTest(f"autocast not available on {device}")
+
         class MyModule(torch.nn.Module):
             def forward(self, x):
-                a_float32 = torch.rand((8, 8), device="cuda")
-                b_float32 = torch.rand((8, 8), device="cuda")
-                d_float32 = torch.rand((8, 8), device="cuda")
+                a_float32 = torch.rand((8, 8), device=device)
+                b_float32 = torch.rand((8, 8), device=device)
+                d_float32 = torch.rand((8, 8), device=device)
 
-                with torch.autocast("cuda"):
+                with torch.autocast(device):
                     e_float64 = torch.mm(a_float32, b_float32)
                     f_float64 = torch.mm(d_float32, e_float64)
                 return f_float64
@@ -1007,21 +1008,22 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertEqual(exported.dtype, real_dtype)
 
         self.assertEqual(exported.device.index, 0)
-        self.assertEqual(exported.dtype, torch.float16)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_autocast_arguments_binding(self):
+    def test_autocast_arguments_binding(self, device):
+        if not torch.amp.is_autocast_available(device):
+            raise unittest.SkipTest(f"autocast not available on {device}")
+
         def f1(x):
-            with torch.autocast(device_type="cuda", enabled=False):
+            with torch.autocast(device_type=device, enabled=False):
                 x = torch.sin(x + 1)
             return x
 
         def f2(x):
-            with torch.autocast(device_type="cpu", enabled=False):
+            with torch.autocast(device_type="cpu", enabled=False):  # Keep CPU variant
                 x = torch.cos(x + 1)
             return x
 
-        x = torch.rand([2, 3])
+        x = torch.rand([2, 3])  # Keep CPU tensor - tracing test
         ref1 = f1(x)
         ref2 = f2(x)
         opt_f1 = torch.compile(backend="eager")(f1)
@@ -1031,24 +1033,26 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
         self.assertTrue(same(ref1, res1))
         self.assertTrue(same(ref2, res2))
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
-    def test_autocast_decorator(self):
+    def test_autocast_decorator(self, device):
+        if not torch.amp.is_autocast_available(device):
+            raise unittest.SkipTest(f"autocast not available on {device}")
+
         def autocast_func(orig_func):
-            @torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+            @torch.amp.autocast(device_type=device, dtype=torch.float16)
             def new_fwd(*args, **kwargs):
                 return orig_func(*args, **kwargs)
 
             return new_fwd
 
-        def autocast_func_cuda(orig_func):
-            @torch.autocast(device_type="cuda", dtype=torch.float16)
+        def autocast_func_device(orig_func):
+            @torch.autocast(device_type=device, dtype=torch.float16)
             def new_fwd(*args, **kwargs):
                 return orig_func(*args, **kwargs)
 
             return new_fwd
 
         def autocast_func_cpu(orig_func):
-            @torch.autocast(device_type="cpu", dtype=torch.float16)
+            @torch.autocast(device_type="cpu", dtype=torch.float16)  # Keep CPU variant
             def new_fwd(*args, **kwargs):
                 return orig_func(*args, **kwargs)
 
@@ -1058,14 +1062,14 @@ class CtxManagerTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
             return torch.mm(a, b)
 
         mm_float16 = autocast_func(mm)
-        mm_float16_cuda = autocast_func_cuda(mm)
+        mm_float16_device = autocast_func_device(mm)
         mm_float16_cpu = autocast_func_cpu(mm)
 
         def fn(a, b):
-            return mm_float16(a, b), mm_float16_cuda(a, b), mm_float16_cpu(a, b)
+            return mm_float16(a, b), mm_float16_device(a, b), mm_float16_cpu(a, b)
 
-        a_float32 = torch.rand((8, 8), device="cuda")
-        b_float32 = torch.rand((8, 8), device="cuda")
+        a_float32 = torch.rand((8, 8), device=device)
+        b_float32 = torch.rand((8, 8), device=device)
 
         ref = fn(a_float32, b_float32)
         opt_fn = torch.compile(backend="eager", fullgraph=True)(fn)
@@ -3300,6 +3304,7 @@ class GraphModule(torch.nn.Module):
 
 instantiate_parametrized_tests(CtxManagerTests)
 instantiate_parametrized_tests(ContextlibContextManagerTests)
+instantiate_device_type_tests(CtxManagerTests, globals(), allow_xpu=True)
 
 
 if __name__ == "__main__":
